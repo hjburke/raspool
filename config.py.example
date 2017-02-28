@@ -1,0 +1,16 @@
+import datetime
+
+# Refresh Times
+LCD_REFRESH = 5         # how frequently the LCD display is updated
+EQUIP_REFRESH = 5       # how frequently the equipment status is updated
+TEMP_REFRESH = 5*60     # how frequently the temperatures are read and recorded
+
+# Google Docs Settings
+GDOCS_OAUTH_JSON = '<path-to-json-file>'
+
+# REST API Settings
+api_base = 'http://api.<your-name-here>.com/api.php/'
+
+# DWEET.IO Settings
+dweet_id = ''
+dweet_key = ''
