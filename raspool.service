@@ -1,0 +1,6 @@
+[Unit]
+Description=Pool Automation Controller
+
+[Service]
+ExecStart=/home/hburke/raspool/raspool.py
+Restart=always

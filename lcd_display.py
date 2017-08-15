@@ -87,16 +87,36 @@ def _write_lcd_file(msg1,msg2):
 # Handle button presses
 #
 def is_select_pressed():
-    return lcd.is_pressed(LCD.SELECT)
+    try:
+        st = lcd.is_pressed(LCD.SELECT)
+    except:
+        st = 0
+    return st 
 
 def is_up_pressed():
-    return lcd.is_pressed(LCD.UP)
+    try:
+        st = lcd.is_pressed(LCD.UP)
+    except:
+        st = 0
+    return st 
 
 def is_down_pressed():
-    return lcd.is_pressed(LCD.DOWN)
+    try:
+        st = lcd.is_pressed(LCD.DOWN)
+    except:
+        st = 0
+    return st 
 
 def is_left_pressed():
-    return lcd.is_pressed(LCD.LEFT)
+    try:
+        st = lcd.is_pressed(LCD.LEFT)
+    except:
+        st = 0
+    return st 
 
 def is_right_pressed():
-    return lcd.is_pressed(LCD.RIGHT)
+    try:
+        st = lcd.is_pressed(LCD.RIGHT)
+    except:
+        st = 0
+    return st 

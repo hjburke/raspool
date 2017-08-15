@@ -11,7 +11,7 @@ from tsl2561 import TSL2561
 
 import config
 import lcd_display as DISPLAY
-import log_to_google as GLOG
+#import log_to_google as GLOG
 import log_to_dweet as DLOG
 
 IO_Solar = 17
@@ -193,7 +193,7 @@ while True:
 		f.write(LogMessage)
 		f.flush()
 
-		GLOG.log_temps_to_google(datetime.datetime.now(),PumpStatus,SolarStatus,AirTemp,PoolTemp,SolarTemp,Lux,LastLog)
+		#GLOG.log_temps_to_google(datetime.datetime.now(),PumpStatus,SolarStatus,AirTemp,PoolTemp,SolarTemp,Lux,LastLog)
 
 		LastLog = ""
 		LastLogUpdate = Now
