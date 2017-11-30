@@ -13,6 +13,7 @@ import config
 import lcd_display as DISPLAY
 #import log_to_google as GLOG
 import log_to_dweet as DLOG
+import log_to_thingspeak as TSLOG
 
 IO_Solar = 17
 IO_Pump = 18
@@ -98,6 +99,7 @@ SolarStatus = GPIO.input(IO_Solar)
 #
 def get_temps():
     global AirTemp, PoolTemp, SolarTemp, Lux
+    global PumpStatus, SolarStatus
 
     AirTemps.append(air_sensor.read_temperature() * 9/5 + 32)
     PoolTemps.append(ReadTemp(ADC_Pool))
@@ -114,6 +116,7 @@ def get_temps():
     DISPLAY.update(2, 'Air Temp  {:5.1f}F'.format(AirTemp),  'Lux        {:4d}'.format(Lux))
 
     DLOG.dweet_update_temps(AirTemp,PoolTemp,SolarTemp,Lux)
+    TSLOG.update_temps(AirTemp,PoolTemp,SolarTemp,Lux,PumpStatus,SolarStatus)
 
     # Start threading this every n seconds
     threading.Timer(config.TEMP_REFRESH, get_temps).start()
