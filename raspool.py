@@ -138,8 +138,8 @@ threading.Thread(target=refresh_display).start()
 def update_equipment():
     global PumpStatus, SolarStatus
 
-    PumpStatus = GPIO.input(IO_Pump)
-    SolarStatus = GPIO.input(IO_Solar)
+#    PumpStatus = GPIO.input(IO_Pump)
+#    SolarStatus = GPIO.input(IO_Solar)
 
     DISPLAY.update(3, 'Pump         {:>3}'.format('On' if PumpStatus==1 else 'Off'), 'Solar        {:>3}'.format('On' if SolarStatus==1 else 'Off'))
     DLOG.dweet_update_equipment(PumpStatus,SolarStatus)
@@ -157,8 +157,8 @@ while True:
 	# Get the data
 	#
 	Now = time.time()
-#	PumpStatus = GPIO.input(IO_Pump)
-#	SolarStatus = GPIO.input(IO_Solar)
+	PumpStatus = GPIO.input(IO_Pump)
+	SolarStatus = GPIO.input(IO_Solar)
 
 	#
 	# Control Logic
