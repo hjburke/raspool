@@ -10,15 +10,13 @@ import Adafruit_BMP.BMP085 as BMP085
 from tsl2561 import TSL2561
 
 import config
+import hwconfig as HW
+
 import lcd_display as DISPLAY
 #import log_to_google as GLOG
 import log_to_dweet as DLOG
+import log_to_mqtt as MLOG
 import log_to_thingspeak as TSLOG
-
-IO_Solar = 17
-IO_Pump = 18
-ADC_Pool = 0
-ADC_Solar = 1
 
 PoolMaxTemp = 90
 SolarPoolDiff = 5
@@ -34,8 +32,8 @@ DISPLAY.update(0, 'Raspool v1.0.0','(c) Burketech')
 
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM) ## Use board pin numbering
-GPIO.setup(IO_Solar, GPIO.OUT)
-GPIO.setup(IO_Pump, GPIO.OUT)
+GPIO.setup(HW.IO_Solar, GPIO.OUT)
+GPIO.setup(HW.IO_Pump, GPIO.OUT)
 
 # Luminosity Sensor (TLS2561)
 lux_sensor = TSL2561()
@@ -91,8 +89,8 @@ PoolTemp = 0
 SolarTemp = 0
 Lux = 0
 
-PumpStatus = GPIO.input(IO_Pump)
-SolarStatus = GPIO.input(IO_Solar)
+PumpStatus = GPIO.input(HW.IO_Pump)
+SolarStatus = GPIO.input(HW.IO_Solar)
 
 #
 # A repeating thread to read the temp probes every n seconds
@@ -102,8 +100,8 @@ def get_temps():
     global PumpStatus, SolarStatus
 
     AirTemps.append(air_sensor.read_temperature() * 9/5 + 32)
-    PoolTemps.append(ReadTemp(ADC_Pool))
-    SolarTemps.append(ReadTemp(ADC_Solar))
+    PoolTemps.append(ReadTemp(HW.ADC_Pool))
+    SolarTemps.append(ReadTemp(HW.ADC_Solar))
     Luxs.append(lux_sensor.lux())
     LastSensorUpdate = Now
 
@@ -116,6 +114,7 @@ def get_temps():
     DISPLAY.update(2, 'Air Temp  {:5.1f}F'.format(AirTemp),  'Lux        {:4d}'.format(Lux))
 
     DLOG.dweet_update_temps(AirTemp,PoolTemp,SolarTemp,Lux)
+    MLOG.mqtt_update_temps(AirTemp,PoolTemp,SolarTemp,Lux)
     TSLOG.update_temps(AirTemp,PoolTemp,SolarTemp,Lux,PumpStatus,SolarStatus)
 
     # Start threading this every n seconds
@@ -138,11 +137,12 @@ threading.Thread(target=refresh_display).start()
 def update_equipment():
     global PumpStatus, SolarStatus
 
-#    PumpStatus = GPIO.input(IO_Pump)
-#    SolarStatus = GPIO.input(IO_Solar)
+    PumpStatus = GPIO.input(HW.IO_Pump)
+    SolarStatus = GPIO.input(HW.IO_Solar)
 
     DISPLAY.update(3, 'Pump         {:>3}'.format('On' if PumpStatus==1 else 'Off'), 'Solar        {:>3}'.format('On' if SolarStatus==1 else 'Off'))
     DLOG.dweet_update_equipment(PumpStatus,SolarStatus)
+    MLOG.mqtt_update_equipment(PumpStatus,SolarStatus)
 
     threading.Timer(config.EQUIP_REFRESH, update_equipment).start()
 
@@ -157,8 +157,8 @@ while True:
 	# Get the data
 	#
 	Now = time.time()
-	PumpStatus = GPIO.input(IO_Pump)
-	SolarStatus = GPIO.input(IO_Solar)
+	PumpStatus = GPIO.input(HW.IO_Pump)
+	SolarStatus = GPIO.input(HW.IO_Solar)
 
 	#
 	# Control Logic
@@ -166,25 +166,25 @@ while True:
 	if (PumpStatus == 1 and SolarStatus == 1 and PoolTemp > PoolMaxTemp):
 		if (Now-LastSolarChange > SolarChangeFrequency):
 			LastLog = "Pool at or above target temperature - turning off solar"
-			GPIO.output(IO_Solar,False)
+			GPIO.output(HW.IO_Solar,False)
 			LastSolarChange = Now
 			LastLogUpdate = 0
 	if (PumpStatus == 1 and SolarStatus == 1 and PoolTemp >= SolarTemp):
 		if (Now-LastSolarChange > SolarChangeFrequency):
 			LastLog = "Pool at or above solar temperature - turning off solar"
-			GPIO.output(IO_Solar,False)
+			GPIO.output(HW.IO_Solar,False)
 			LastSolarChange = Now
 			LastLogUpdate = 0
 	if (PumpStatus == 1 and SolarStatus == 0 and PoolTemp < PoolMaxTemp and SolarTemp-PoolTemp > SolarPoolDiff):
 		if (Now-LastSolarChange > SolarChangeFrequency):
 			LastLog = "Pool below target temperature and solar differential reached - turning on solar"
-			GPIO.output(IO_Solar,True)
+			GPIO.output(HW.IO_Solar,True)
 			LastSolarChange = Now
 			LastLogUpdate = 0
 	if (PumpStatus == 0 and SolarStatus == 1):
 		if (Now-LastSolarChange > SolarChangeFrequency):
 			LastLog = "Pool pump off - turning off solar"
-			GPIO.output(IO_Solar,False)
+			GPIO.output(HW.IO_Solar,False)
 			LastSolarChange = Now
 			LastLogUpdate = 0
 
@@ -205,13 +205,13 @@ while True:
 	# Keypad Button Logic
 	#
 	if DISPLAY.is_up_pressed():
-		GPIO.output(IO_Pump,True)
+		GPIO.output(HW.IO_Pump,True)
 
 	if DISPLAY.is_down_pressed():
-		GPIO.output(IO_Pump,False)
+		GPIO.output(HW.IO_Pump,False)
 
 	if DISPLAY.is_right_pressed():
-		GPIO.output(IO_Solar,True)
+		GPIO.output(HW.IO_Solar,True)
 
 	if DISPLAY.is_left_pressed():
-		GPIO.output(IO_Solar,False)
+		GPIO.output(HW.IO_Solar,False)
