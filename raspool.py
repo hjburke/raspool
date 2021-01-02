@@ -1,5 +1,6 @@
 #!/usr/bin/python
 import datetime, time, signal, sys, math
+import logging
 import threading
 from collections import deque
 from thermistor2temp import therm2temp
@@ -10,32 +11,22 @@ import Adafruit_BMP.BMP085 as BMP085
 from tsl2561 import TSL2561
 
 import config
+import hwconfig as HW
 import lcd_display as DISPLAY
-#import log_to_google as GLOG
-import log_to_dweet as DLOG
-import log_to_thingspeak as TSLOG
-
-IO_Solar = 17
-IO_Pump = 18
-ADC_Pool = 0
-ADC_Solar = 1
-
-PoolMaxTemp = 90
-SolarPoolDiff = 5
-SolarChangeFrequency = 5 * 60
-DisplayUpdateFrequency = 5
-SensorUpdateFrequency = 1
-LogUpdateFrequency = 5 * 60
+import mqtt as MQTT
 
 #
 # Startup
 #
-DISPLAY.update(0, 'Raspool v1.0.0','(c) Burketech')
+logging.basicConfig(filename='/var/log/raspool.log',level=logging.INFO,format='%(asctime)s %(message)s',datefmt='%Y-%m-%d %I:%M:%S %p')
+logging.info('Raspool v1.1.0 starting')
+DISPLAY.update(0, 'Raspool v1.1.0','(c) Burketech')
 
+# Initialize the GPIO
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM) ## Use board pin numbering
-GPIO.setup(IO_Solar, GPIO.OUT)
-GPIO.setup(IO_Pump, GPIO.OUT)
+GPIO.setup(HW.IO_Solar, GPIO.OUT)
+GPIO.setup(HW.IO_Pump, GPIO.OUT)
 
 # Luminosity Sensor (TLS2561)
 lux_sensor = TSL2561()
@@ -57,9 +48,9 @@ class CircularBuffer(deque):
 		return sum(self)/len(self)
 
 def signal_handler(signal, frame):
-        print 'You pressed Ctrl+C!'
+	print 'You pressed Ctrl+C!'
 	f.close()
-        sys.exit(0)
+	sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -73,50 +64,45 @@ def ReadTemp(channel):
 
 	return therm2temp[ohms]
 
-# Open a logging file
-f = open("/var/log/pool.log", "a+")
-
 LastSolarChange = 0
-LastSensorUpdate = 0
-LastLog = "System startup"
-LastLogUpdate = 0
+LastChange = "System startup"
 
 AirTemps = CircularBuffer(size=10)
 PoolTemps = CircularBuffer(size=10)
 SolarTemps = CircularBuffer(size=10)
+ReturnTemps = CircularBuffer(size=10)
 Luxs = CircularBuffer(size=10)
 
 AirTemp = 0
 PoolTemp = 0
 SolarTemp = 0
+ReturnTemp = 0
 Lux = 0
 
-PumpStatus = GPIO.input(IO_Pump)
-SolarStatus = GPIO.input(IO_Solar)
+PumpStatus = GPIO.input(HW.IO_Pump)
+SolarStatus = GPIO.input(HW.IO_Solar)
 
 #
 # A repeating thread to read the temp probes every n seconds
 #
 def get_temps():
-    global AirTemp, PoolTemp, SolarTemp, Lux
-    global PumpStatus, SolarStatus
+    global AirTemp, PoolTemp, SolarTemp, ReturnTemp, Lux
 
     AirTemps.append(air_sensor.read_temperature() * 9/5 + 32)
-    PoolTemps.append(ReadTemp(ADC_Pool))
-    SolarTemps.append(ReadTemp(ADC_Solar))
+    PoolTemps.append(ReadTemp(HW.ADC_Pool))
+    SolarTemps.append(ReadTemp(HW.ADC_Solar))
+    ReturnTemps.append(ReadTemp(HW.ADC_Return))
     Luxs.append(lux_sensor.lux())
-    LastSensorUpdate = Now
 
     AirTemp = AirTemps.average
     PoolTemp = PoolTemps.average
     SolarTemp = SolarTemps.average
+    ReturnTemp = ReturnTemps.average
     Lux = Luxs.average
 
     DISPLAY.update(1, 'Pool      {:5.1f}F'.format(PoolTemp), 'Solar     {:5.1f}F'.format(SolarTemp))
-    DISPLAY.update(2, 'Air Temp  {:5.1f}F'.format(AirTemp),  'Lux        {:4d}'.format(Lux))
-
-    DLOG.dweet_update_temps(AirTemp,PoolTemp,SolarTemp,Lux)
-    TSLOG.update_temps(AirTemp,PoolTemp,SolarTemp,Lux,PumpStatus,SolarStatus)
+    DISPLAY.update(2, 'Return    {:5.1f}F'.format(ReturnTemp), 'Air Temp  {:5.1f}F'.format(AirTemp))
+    #DISPLAY.update(3, 'Air Temp  {:5.1f}F'.format(AirTemp),  'Lux        {:4d}'.format(Lux))
 
     # Start threading this every n seconds
     threading.Timer(config.TEMP_REFRESH, get_temps).start()
@@ -133,85 +119,125 @@ def refresh_display():
 threading.Thread(target=refresh_display).start()
 
 #
-# A repeating thread to update the equipment status
+# A repeating thread to log status to MQTT
 #
-def update_equipment():
-    global PumpStatus, SolarStatus
+def log_status():
+    # Dont log until we have at least the air temp captured
+    if (AirTemp != 0):
+        MQTT.publish_status(AirTemp, PoolTemp, SolarTemp, ReturnTemp, Lux, PumpStatus, SolarStatus, LastChange)
 
-#    PumpStatus = GPIO.input(IO_Pump)
-#    SolarStatus = GPIO.input(IO_Solar)
+    threading.Timer(config.LOGGING_REFRESH, log_status).start()
 
-    DISPLAY.update(3, 'Pump         {:>3}'.format('On' if PumpStatus==1 else 'Off'), 'Solar        {:>3}'.format('On' if SolarStatus==1 else 'Off'))
-    DLOG.dweet_update_equipment(PumpStatus,SolarStatus)
+threading.Thread(target=log_status).start()
 
-    threading.Timer(config.EQUIP_REFRESH, update_equipment).start()
+#
+# Command to force status update
+#
+def state_cmd(client, userdata, message):
+	MQTT.publish_status(AirTemp, PoolTemp, SolarTemp, ReturnTemp, Lux, PumpStatus, SolarStatus, LastChange)
 
-threading.Thread(target=update_equipment).start()
+#
+# Control the water pump
+#
+def pump_cmd(client, userdata, message):
+    global PumpStatus
+    if (message.payload == "ON"):
+        PumpStatus = 1
+        GPIO.output(HW.IO_Pump,True)
+        MQTT.publish_pump(True)
+        DISPLAY.show_now("Pump ON", "")
+    elif (message.payload == "OFF"):
+        PumpStatus = 0
+        GPIO.output(HW.IO_Pump,False)
+        MQTT.publish_pump(False)
+        DISPLAY.show_now("Pump OFF", "")
+    else:
+        logging.warning("Unknown pump cmd %s" % message.payload)
+
+#
+# Control the solar heater
+#
+def solar_cmd(client, userdata, message):
+    global SolarStatus
+    if (message.payload == "ON"):
+        SolarStatus = 1
+        GPIO.output(HW.IO_Solar,True)
+        MQTT.publish_solar(True)
+        DISPLAY.show_now("Solar ON", "")
+    elif (message.payload == "OFF"):
+        SolarStatus = 0
+        GPIO.output(HW.IO_Solar,False)
+        MQTT.publish_solar(False)
+        DISPLAY.show_now("Solar OFF", "")
+    else:
+        logging.warning("Unknown solar cmd %s" % message.payload)
 
 #
 # MAIN
 #
+
+# Subscribe to MQTT messages
+mqtt_client = MQTT.init((("state/cmd",state_cmd),("pump/cmd",pump_cmd),("solar/cmd",solar_cmd)))
 
 while True:
 	#
 	# Get the data
 	#
 	Now = time.time()
-	PumpStatus = GPIO.input(IO_Pump)
-	SolarStatus = GPIO.input(IO_Solar)
+	PumpStatus = GPIO.input(HW.IO_Pump)
+	SolarStatus = GPIO.input(HW.IO_Solar)
+	DISPLAY.update(3, 'Pump         {:>3}'.format('On' if PumpStatus==1 else 'Off'), 'Solar        {:>3}'.format('On' if SolarStatus==1 else 'Off'))
 
 	#
 	# Control Logic
 	#
-	if (PumpStatus == 1 and SolarStatus == 1 and PoolTemp > PoolMaxTemp):
-		if (Now-LastSolarChange > SolarChangeFrequency):
-			LastLog = "Pool at or above target temperature - turning off solar"
-			GPIO.output(IO_Solar,False)
-			LastSolarChange = Now
-			LastLogUpdate = 0
-	if (PumpStatus == 1 and SolarStatus == 1 and PoolTemp >= SolarTemp):
-		if (Now-LastSolarChange > SolarChangeFrequency):
-			LastLog = "Pool at or above solar temperature - turning off solar"
-			GPIO.output(IO_Solar,False)
-			LastSolarChange = Now
-			LastLogUpdate = 0
-	if (PumpStatus == 1 and SolarStatus == 0 and PoolTemp < PoolMaxTemp and SolarTemp-PoolTemp > SolarPoolDiff):
-		if (Now-LastSolarChange > SolarChangeFrequency):
-			LastLog = "Pool below target temperature and solar differential reached - turning on solar"
-			GPIO.output(IO_Solar,True)
-			LastSolarChange = Now
-			LastLogUpdate = 0
-	if (PumpStatus == 0 and SolarStatus == 1):
-		if (Now-LastSolarChange > SolarChangeFrequency):
-			LastLog = "Pool pump off - turning off solar"
-			GPIO.output(IO_Solar,False)
-			LastSolarChange = Now
-			LastLogUpdate = 0
 
-	#
-	# Logging Logic
-	#
-	if (Now-LastLogUpdate > LogUpdateFrequency):
-		LogMessage = "%d,%d,%d,%d,%d,%d,%d,%s\n" % (Now,PumpStatus,SolarStatus,AirTemp,PoolTemp,SolarTemp,Lux,LastLog)
-		f.write(LogMessage)
-		f.flush()
+	# Dont change until we have at least the pool temp captured
+	if (PoolTemp != 0):
 
-		#GLOG.log_temps_to_google(datetime.datetime.now(),PumpStatus,SolarStatus,AirTemp,PoolTemp,SolarTemp,Lux,LastLog)
+		# Pump & solar are on & pool temp at or above set maximum - turn OFF solar
+		if (PumpStatus == 1 and SolarStatus == 1 and PoolTemp >= config.POOL_MAX_TEMP):
+			if (Now-LastSolarChange > config.SOLAR_CHANGE_FREQUENCY):
+				LastChange = "Pool at or above target temperature - turning off solar"
+				MQTT.publish_solar_cmd("OFF")
+				LastSolarChange = Now
 
-		LastLog = ""
-		LastLogUpdate = Now
+		# Pump & solar are on & pool temp at or above solar temp - turn OFF solar
+		if (PumpStatus == 1 and SolarStatus == 1 and PoolTemp >= SolarTemp):	
+			if (Now-LastSolarChange > config.SOLAR_CHANGE_FREQUENCY):
+				LastChange = "Pool at or above solar temperature - turning off solar"
+				MQTT.publish_solar_cmd("OFF")
+				LastSolarChange = Now
+
+		# Pump is on & solar is off & pool temp below set maximum & solar above pool temp by threshold - turn ON solar
+		if (PumpStatus == 1 and SolarStatus == 0 and PoolTemp < config.POOL_MAX_TEMP and SolarTemp-PoolTemp > config.SOLAR_POOL_DIFF):
+			if (Now-LastSolarChange > config.SOLAR_CHANGE_FREQUENCY):
+				LastChange = "Pool below target temperature and solar differential reached - turning on solar"
+				MQTT.publish_solar_cmd("ON")
+				LastSolarChange = Now
+
+		# Pump is off & solar is on - turn OFF solar
+		if (PumpStatus == 0 and SolarStatus == 1):
+			if (Now-LastSolarChange > config.SOLAR_CHANGE_FREQUENCY):
+				LastChange = "Pool pump off - turning off solar"
+				MQTT.publish_solar_cmd("OFF")
+				LastSolarChange = Now
 
 	#
 	# Keypad Button Logic
 	#
 	if DISPLAY.is_up_pressed():
-		GPIO.output(IO_Pump,True)
+		MQTT.publish_pump_cmd("ON")
 
 	if DISPLAY.is_down_pressed():
-		GPIO.output(IO_Pump,False)
+		MQTT.publish_pump_cmd("OFF")
 
 	if DISPLAY.is_right_pressed():
-		GPIO.output(IO_Solar,True)
+		MQTT.publish_solar_cmd("ON")
 
 	if DISPLAY.is_left_pressed():
-		GPIO.output(IO_Solar,False)
+		MQTT.publish_solar_cmd("OFF")
+
+	# Check for any MQTT messages to send or process
+
+	mqtt_client.loop()
